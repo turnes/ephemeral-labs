@@ -1,5 +1,5 @@
-# ephemeral-Labs-KVM
-Ephemeral Labs with KVM
+# Ephemeral Labs
+Ephemeral Labs with KVM and Terraform/OpenTofu
 
 ## Installing KVM (Ubuntu 26.04)
 
@@ -18,8 +18,8 @@ Then pick one option.
 ### Bootstrap script
 
 ```bash
-./boostrap/install-kvm-ubuntu.sh --check-only
-sudo ./boostrap/install-kvm-ubuntu.sh            # add --with-gui for virt-manager
+./bootstrap/install-kvm-ubuntu.sh --check-only
+sudo ./bootstrap/install-kvm-ubuntu.sh            # add --with-gui for virt-manager
 ```
 
 ### Ansible
