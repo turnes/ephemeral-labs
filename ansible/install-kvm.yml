@@ -1,9 +1,9 @@
 ---
 # Install KVM/QEMU + libvirt on Ubuntu hosts and grant users access.
-# Usage:
-#   ansible-playbook -i inventory.ini install-kvm.yml -K
-#   ansible-playbook -i inventory.ini install-kvm.yml -K -e kvm_with_gui=true
-#   ansible-playbook -i inventory.ini install-kvm.yml --tags hwcheck   # hardware check only
+# Usage (from the project root; ansible.cfg points at inventory.yml):
+#   ansible-playbook ansible/install-kvm.yml -K
+#   ansible-playbook ansible/install-kvm.yml -K -e kvm_with_gui=true
+#   ansible-playbook ansible/install-kvm.yml -K --tags hwcheck   # hardware check only
 - name: Install KVM and virtualization tools
   hosts: kvm_hosts
   become: true

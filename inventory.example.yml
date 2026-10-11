@@ -1,0 +1,14 @@
+kvm_hosts:
+  hosts:
+    lab1:
+      ansible_host: 192.168.1.50
+      ansible_user: ubuntu
+    lab2:
+      ansible_host: 192.168.1.51
+      ansible_user: ubuntu
+      ansible_port: 2222  # optional, default 22
+  vars:
+    ansible_ssh_private_key_file: ~/.ssh/ephemeral-labs/id_ed25519
+    # Ubuntu 26.04 defaults to sudo-rs, whose password prompt Ansible doesn't detect; use classic sudo
+    ansible_become_exe: sudo.ws
+    ansible_python_interpreter: /usr/bin/python3

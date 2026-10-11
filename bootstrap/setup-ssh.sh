@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Create the ephemeral-labs SSH key, write a ~/.ssh config entry per host and copy the key to each host.
-# Usage: ./setup-ssh.sh [hosts-file]   (default: ssh-hosts next to this script)
-# Hosts file format, one per line:  name  address  user  [port]
+# Usage: ./setup-ssh.sh [inventory]   (default: inventory.yml in the project root)
+# Inventory format: see inventory.example.yml
 # Run as your normal user, not root. Targets need openssh-server and password login for the first copy.
 set -euo pipefail
 
-HOSTS_FILE="${1:-$(dirname "$0")/ssh-hosts}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOSTS_FILE="${1:-$(dirname "$SCRIPT_DIR")/inventory.yml}"
 KEY_DIR="$HOME/.ssh/ephemeral-labs"
 KEY="$KEY_DIR/id_ed25519"
 INCLUDE_LINE="Include ~/.ssh/ephemeral-labs/*.conf"
@@ -15,7 +16,9 @@ warn() { echo -e "\e[1;33m!!\e[0m $*" >&2; }
 die()  { echo -e "\e[1;31mxx\e[0m $*" >&2; exit 1; }
 
 [[ $EUID -ne 0 ]] || die "Run as your normal user, not root."
-[[ -f "$HOSTS_FILE" ]] || die "Hosts file not found: $HOSTS_FILE (copy ssh-hosts.example to ssh-hosts)."
+[[ -f "$HOSTS_FILE" ]] || die "Hosts file not found: $HOSTS_FILE (copy inventory.example.yml to inventory.yml)."
+source "$SCRIPT_DIR/hosts.sh"
+HOSTS=$(read_hosts "$HOSTS_FILE") || exit 1
 
 mkdir -p "$KEY_DIR"
 chmod 700 "$HOME/.ssh" "$KEY_DIR"
@@ -39,11 +42,7 @@ fi
 
 failed=()
 # Read hosts on fd 3 so ssh-copy-id can still prompt for passwords on stdin
-while read -r name address user port <&3; do
-    [[ -z "$name" || "$name" == \#* ]] && continue
-    [[ -n "$address" && -n "$user" ]] || { warn "Skipping malformed line for '$name'"; continue; }
-    port="${port:-22}"
-
+while IFS=$'\t' read -r name address user port <&3; do
     log "$name ($user@$address:$port)"
     cat > "$KEY_DIR/$name.conf" <<EOF
 Host $name
@@ -67,7 +66,7 @@ EOF
         warn "Could not set up $name"
         failed+=("$name")
     fi
-done 3< "$HOSTS_FILE"
+done 3<<< "$HOSTS"
 
 (( ${#failed[@]} == 0 )) || die "Failed hosts: ${failed[*]}"
 log "Done. Connect with: ssh <name>"
