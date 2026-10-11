@@ -1,20 +1,38 @@
 ---
 # Install the image and lab tooling on the KVM hosts:
-#   terraform, packer (HashiCorp apt repo), cloud-image-utils (cloud-localds), virtinst (virt-install).
+#   terraform, packer (HashiCorp apt repo), cloud-image-utils (cloud-localds), virtinst (virt-install),
+#   docker (Docker apt repo), kind (GitHub release), kubeadm + kubectl (pkgs.k8s.io).
 # Run after install-kvm.yml.
 # Usage (from the project root; ansible.cfg points at inventory.yml):
 #   ansible-playbook ansible/install-tools.yml -K
+#   ansible-playbook ansible/install-tools.yml -K -e elab_k8s_minor=v1.36 -e elab_kind_version=v0.32.0
 - name: Install lab tools
   hosts: kvm_hosts
   become: true
 
   vars:
+    elab_arch: "{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}"
     elab_hashicorp_packages:
       - terraform
       - packer
     elab_ubuntu_packages:
       - cloud-image-utils
       - virtinst
+    elab_docker_packages:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    # kubelet is left out on purpose: the hypervisors are not cluster nodes
+    elab_k8s_packages:
+      - kubeadm
+      - kubectl
+    elab_k8s_minor: v1.37
+    elab_kind_version: v0.33.0
+    # Users added to the docker group; defaults to the remote login user (who ran sudo)
+    elab_docker_users:
+      - "{{ ansible_facts['env']['SUDO_USER'] | default(ansible_user | default('root')) }}"
 
   tasks:
     - name: Install deb822_repository dependency
@@ -31,15 +49,75 @@
         uris: https://apt.releases.hashicorp.com
         suites: "{{ ansible_facts['distribution_release'] }}"
         components: main
-        architectures: "{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}"
+        architectures: "{{ elab_arch }}"
         signed_by: https://apt.releases.hashicorp.com/gpg
+
+    - name: Add Docker apt repository
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: deb
+        uris: https://download.docker.com/linux/ubuntu
+        suites: "{{ ansible_facts['distribution_release'] }}"
+        components: stable
+        architectures: "{{ elab_arch }}"
+        signed_by: https://download.docker.com/linux/ubuntu/gpg
+
+    - name: Add Kubernetes apt repository
+      ansible.builtin.deb822_repository:
+        name: kubernetes
+        types: deb
+        uris: https://pkgs.k8s.io/core:/stable:/{{ elab_k8s_minor }}/deb/
+        suites: /
+        signed_by: https://pkgs.k8s.io/core:/stable:/{{ elab_k8s_minor }}/deb/Release.key
+
+    - name: Create Docker config directory
+      ansible.builtin.file:
+        path: /etc/docker
+        state: directory
+        mode: "0755"
+
+    # Docker sets the FORWARD policy to DROP by default, which cuts off VMs bridged on br0
+    - name: Keep Docker from blocking bridged VM traffic
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: "{{ {'ip-forward-no-drop': true} | to_nice_json }}\n"
+        mode: "0644"
+      register: elab_docker_config
 
     - name: Install tools
       ansible.builtin.apt:
-        name: "{{ elab_hashicorp_packages + elab_ubuntu_packages }}"
+        name: "{{ elab_hashicorp_packages + elab_ubuntu_packages + elab_docker_packages + elab_k8s_packages }}"
         state: present
         update_cache: true
         install_recommends: false
+
+    - name: Restart Docker to apply its config
+      ansible.builtin.systemd_service:
+        name: docker
+        state: restarted
+      when: elab_docker_config is changed
+
+    - name: Enable and start Docker
+      ansible.builtin.systemd_service:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Add users to the docker group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop: "{{ elab_docker_users | reject('equalto', 'root') | list }}"
+
+    - name: Install kind
+      ansible.builtin.get_url:
+        url: https://github.com/kubernetes-sigs/kind/releases/download/{{ elab_kind_version }}/kind-linux-{{ elab_arch }}
+        dest: /usr/local/bin/kind
+        checksum: sha256:https://github.com/kubernetes-sigs/kind/releases/download/{{ elab_kind_version }}/kind-linux-{{ elab_arch }}.sha256sum
+        owner: root
+        group: root
+        mode: "0755"
 
     - name: Report versions
       ansible.builtin.command: "{{ item }}"
@@ -48,9 +126,14 @@
         - packer version
         - dpkg-query -W --showformat=${Package}\ ${Version} cloud-image-utils
         - virt-install --version
+        - docker --version
+        - kind version
+        - kubeadm version -o short
+        - kubectl version --client
       register: elab_tool_versions
       changed_when: false
 
     - name: Show summary
       ansible.builtin.debug:
-        msg: "{{ elab_tool_versions.results | map(attribute='stdout_lines') | map('first') | list }}"
+        msg: "{{ elab_tool_versions.results | map(attribute='stdout_lines') | map('first') | list
+                 + ['Users ' ~ (elab_docker_users | join(', ')) ~ ' must log in again to use docker without sudo.'] }}"
