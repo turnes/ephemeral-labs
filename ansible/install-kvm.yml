@@ -10,9 +10,9 @@
 
   vars:
     kvm_with_gui: false
-    # Users added to the kvm/libvirt groups; defaults to the SSH/login user
+    # Users added to the kvm/libvirt groups; defaults to the remote login user (who ran sudo)
     kvm_users:
-      - "{{ ansible_user | default(lookup('env', 'USER')) }}"
+      - "{{ ansible_facts['env']['SUDO_USER'] | default(ansible_user | default('root')) }}"
     kvm_packages:
       - qemu-system-x86
       - qemu-utils
