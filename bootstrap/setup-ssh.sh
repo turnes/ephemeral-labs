@@ -55,12 +55,14 @@ Host $name
 EOF
 
     if ssh -o BatchMode=yes -o ConnectTimeout=5 "$name" true </dev/null 2>/dev/null; then
-        echo "   key already installed"
+        echo "   login ok: ssh $name (key already installed)"
         continue
     fi
-    if ssh-copy-id -i "$KEY.pub" -o StrictHostKeyChecking=accept-new -p "$port" "$user@$address" \
+    # Hide ssh-copy-id's "Now try logging into the machine" hint; we test the login ourselves.
+    # Password prompt and errors go to stderr/tty and still show.
+    if ssh-copy-id -i "$KEY.pub" -o StrictHostKeyChecking=accept-new -p "$port" "$user@$address" >/dev/null \
         && ssh -o BatchMode=yes -o ConnectTimeout=5 "$name" true </dev/null; then
-        echo "   ok"
+        echo "   login ok: ssh $name"
     else
         warn "Could not set up $name"
         failed+=("$name")
