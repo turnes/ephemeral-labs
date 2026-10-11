@@ -57,11 +57,23 @@ ansible-playbook ansible/install-kvm.yml -K --tags hwcheck   # hardware check on
 ansible-playbook ansible/install-kvm.yml -K                  # add -e kvm_with_gui=true for virt-manager
 ```
 
-### 6. Verify
+### 6. Storage pools
+
+```bash
+ansible-playbook ansible/storage-pool.yml -K
+```
+
+| Pool | Path | Used by |
+|------|------|---------|
+| `elab-images` | `/var/lib/libvirt/elab/images` | Packer uploads base/golden images; Terraform clones from them |
+| one per lab | `/var/lib/libvirt/elab/labs/<lab>` | Created and destroyed by Terraform with the lab |
+
+### 7. Verify
 
 ```bash
 ssh lab1 kvm-ok
 ssh lab1 virsh -c qemu:///system list --all
+ssh lab1 virsh -c qemu:///system pool-list --all
 ```
 
 ## Roadmap: `elab` CLI
@@ -71,6 +83,7 @@ A single entry point (`bin/elab`, bash) that wraps the scripts above:
 ```
 elab check                  # hardware preflight
 elab install                # install KVM on lab hosts (Ansible)
+elab pool                   # create storage pools (Ansible)
 elab hosts add|rm|ls        # manage lab hosts
 elab ssh setup | <name>     # set up keys / connect
 elab up|down|status <lab>   # terraform in modules/

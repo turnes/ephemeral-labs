@@ -1,0 +1,82 @@
+---
+# Create the shared libvirt storage pool for base and golden images (Packer uploads, Terraform consumes)
+# and the parent directory for per-lab pools (each lab's pool is created and destroyed by Terraform).
+# Run after install-kvm.yml.
+# Usage (from the project root; ansible.cfg points at inventory.yml):
+#   ansible-playbook ansible/storage-pool.yml -K
+- name: Create ephemeral-labs storage pools
+  hosts: kvm_hosts
+  become: true
+
+  vars:
+    elab_root: /var/lib/libvirt/elab
+    elab_image_pool_name: elab-images
+    elab_image_pool_path: "{{ elab_root }}/images"
+    # Terraform creates one pool per lab under this directory: <elab_labs_path>/<lab>
+    elab_labs_path: "{{ elab_root }}/labs"
+
+  tasks:
+    - name: Check libvirt is available
+      ansible.builtin.command: virsh -c qemu:///system version
+      changed_when: false
+      register: elab_virsh
+      failed_when: false
+
+    - name: Fail if libvirt is missing
+      ansible.builtin.fail:
+        msg: "libvirt is not available on {{ inventory_hostname }}; run ansible/install-kvm.yml first."
+      when: elab_virsh.rc != 0
+
+    - name: Create pool directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0711"
+      loop:
+        - "{{ elab_root }}"
+        - "{{ elab_image_pool_path }}"
+        - "{{ elab_labs_path }}"
+
+    - name: Check for the image pool
+      ansible.builtin.command: virsh pool-dumpxml {{ elab_image_pool_name }}
+      register: elab_pool_xml
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if the image pool points elsewhere
+      ansible.builtin.fail:
+        msg: >-
+          Pool {{ elab_image_pool_name }} already exists with a different path.
+          Remove it (virsh pool-destroy/pool-undefine) or set elab_image_pool_path to match.
+      when:
+        - elab_pool_xml.rc == 0
+        - elab_pool_xml.stdout is not search('<path>' ~ elab_image_pool_path ~ '</path>')
+
+    - name: Define the image pool
+      ansible.builtin.command: >-
+        virsh pool-define-as {{ elab_image_pool_name }} dir --target {{ elab_image_pool_path }}
+      when: elab_pool_xml.rc != 0
+      changed_when: true
+
+    - name: Read image pool state
+      ansible.builtin.command: virsh pool-info {{ elab_image_pool_name }}
+      register: elab_pool_info
+      changed_when: false
+
+    - name: Start the image pool
+      ansible.builtin.command: virsh pool-start {{ elab_image_pool_name }}
+      when: elab_pool_info.stdout is not search('State:\s+running')
+      changed_when: true
+
+    - name: Autostart the image pool
+      ansible.builtin.command: virsh pool-autostart {{ elab_image_pool_name }}
+      when: elab_pool_info.stdout is not search('Autostart:\s+yes')
+      changed_when: true
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg:
+          - "Image pool: {{ elab_image_pool_name }} -> {{ elab_image_pool_path }}"
+          - "Lab pools:  {{ elab_labs_path }}/<lab> (created by Terraform)"
