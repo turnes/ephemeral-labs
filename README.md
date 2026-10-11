@@ -84,12 +84,21 @@ ansible-playbook ansible/install-tools.yml -K
 
 Installs `terraform` and `packer` (HashiCorp apt repo), `cloud-image-utils` (`cloud-localds`) and `virtinst` (`virt-install`) on the KVM hosts.
 
-### 9. Verify
+### 9. Cloud images
+
+```bash
+ansible-playbook ansible/cloud-images.yml -K
+```
+
+Downloads the latest Ubuntu 26.04 build from [resolute/current](https://cloud-images.ubuntu.com/resolute/current/) into the `elab-images` pool as a versioned, checksum-verified volume, e.g. `ubuntu-26.04-20260927.qcow2`. Terraform should reference that exact name. Re-running after a new build adds a new volume; existing ones are never replaced.
+
+### 10. Verify
 
 ```bash
 ssh lab1 kvm-ok
 ssh lab1 virsh -c qemu:///system list --all
 ssh lab1 virsh -c qemu:///system pool-list --all
+ssh lab1 virsh -c qemu:///system vol-list --pool elab-images
 ssh lab1 virsh -c qemu:///system net-list --all
 ssh lab1 ip -br addr show br0
 ```
@@ -104,6 +113,7 @@ elab install                # install KVM on lab hosts (Ansible)
 elab pool                   # create storage pools (Ansible)
 elab bridge                 # create LAN bridge br0 (Ansible)
 elab tools                  # install terraform, packer, cloud-image-utils (Ansible)
+elab images                 # download cloud images into elab-images (Ansible)
 elab hosts add|rm|ls        # manage lab hosts
 elab ssh setup | <name>     # set up keys / connect
 elab up|down|status <lab>   # terraform in modules/
