@@ -1,0 +1,156 @@
+---
+# Install KVM/QEMU + libvirt on Ubuntu hosts and grant users access.
+# Usage:
+#   ansible-playbook -i inventory.ini install-kvm.yml -K
+#   ansible-playbook -i inventory.ini install-kvm.yml -K -e kvm_with_gui=true
+#   ansible-playbook -i inventory.ini install-kvm.yml --tags hwcheck   # hardware check only
+- name: Install KVM and virtualization tools
+  hosts: kvm_hosts
+  become: true
+
+  vars:
+    kvm_with_gui: false
+    # Users added to the kvm/libvirt groups; defaults to the SSH/login user
+    kvm_users:
+      - "{{ ansible_user | default(lookup('env', 'USER')) }}"
+    kvm_packages:
+      - qemu-system-x86
+      - qemu-utils
+      - libvirt-daemon-system
+      - libvirt-clients
+      - bridge-utils
+      - virtinst
+      - cpu-checker
+      - ovmf
+      - dnsmasq-base
+    kvm_gui_packages:
+      - virt-manager
+    # Hardware thresholds (warnings only; missing CPU virtualization is fatal)
+    kvm_min_cpus: 2
+    kvm_min_ram_mb: 4096
+    kvm_min_disk_gb: 20
+
+  tasks:
+    - name: Ensure target is Ubuntu
+      ansible.builtin.assert:
+        that: ansible_facts['distribution'] == 'Ubuntu'
+        fail_msg: "This playbook targets Ubuntu; found {{ ansible_facts['distribution'] }}."
+      tags: [hwcheck]
+
+    - name: Hardware check
+      tags: [hwcheck]
+      block:
+        - name: Check CPU virtualization support
+          ansible.builtin.command: grep -Eq '(vmx|svm)' /proc/cpuinfo
+          changed_when: false
+          register: kvm_cpu_check
+          failed_when: false
+
+        - name: Check for /dev/kvm
+          ansible.builtin.stat:
+            path: /dev/kvm
+          register: kvm_dev
+
+        - name: Check IOMMU groups
+          ansible.builtin.find:
+            paths: /sys/kernel/iommu_groups
+            file_type: directory
+          register: kvm_iommu
+
+        - name: Evaluate hardware
+          ansible.builtin.set_fact:
+            # VM images live under /var/lib/libvirt; use the most specific mount covering it
+            kvm_disk_free_gb: >-
+              {{ ((ansible_facts['mounts']
+                   | selectattr('mount', 'in', ['/', '/var', '/var/lib', '/var/lib/libvirt'])
+                   | sort(attribute='mount') | last).size_available / 1024 ** 3) | int }}
+            kvm_hw_warnings: >-
+              {{ [
+                   ('Architecture ' ~ ansible_facts['architecture'] ~ ' is untested; this playbook targets x86_64.')
+                     if ansible_facts['architecture'] != 'x86_64' else '',
+                   '/dev/kvm missing; KVM may be disabled in BIOS/UEFI or the kvm module is not loaded.'
+                     if not kvm_dev.stat.exists else '',
+                   ('Running inside a VM (' ~ ansible_facts['virtualization_type'] ~ '); KVM requires nested virtualization on the host.')
+                     if ansible_facts['virtualization_role'] == 'guest' else '',
+                   ('CPUs: ' ~ ansible_facts['processor_vcpus'] ~ ' (recommended >= ' ~ kvm_min_cpus ~ ')')
+                     if ansible_facts['processor_vcpus'] | int < kvm_min_cpus | int else '',
+                   ('RAM: ' ~ ansible_facts['memtotal_mb'] ~ 'M (recommended >= ' ~ kvm_min_ram_mb ~ 'M)')
+                     if ansible_facts['memtotal_mb'] | int < kvm_min_ram_mb | int else '',
+                 ] | select | list }}
+
+        - name: Show hardware report
+          ansible.builtin.debug:
+            msg:
+              - "Architecture: {{ ansible_facts['architecture'] }}"
+              - "CPU virtualization: {{ 'yes' if kvm_cpu_check.rc == 0 else 'NO' }}"
+              - "/dev/kvm: {{ 'present' if kvm_dev.stat.exists else 'missing' }}"
+              - "CPUs: {{ ansible_facts['processor_vcpus'] }}"
+              - "RAM: {{ ansible_facts['memtotal_mb'] }}M"
+              - "Free disk for /var/lib/libvirt: {{ kvm_disk_free_gb }}G"
+              - "IOMMU: {{ 'enabled' if kvm_iommu.matched > 0 else 'not enabled (only needed for PCI passthrough)' }}"
+
+        - name: Warn about hardware shortcomings
+          ansible.builtin.debug:
+            msg: "{{ kvm_hw_warnings + (['Free disk: ' ~ kvm_disk_free_gb ~ 'G (recommended >= ' ~ kvm_min_disk_gb ~ 'G)']
+                    if kvm_disk_free_gb | int < kvm_min_disk_gb | int else []) }}"
+          when: kvm_hw_warnings | length > 0 or kvm_disk_free_gb | int < kvm_min_disk_gb | int
+
+        - name: Fail if CPU does not expose VT-x/AMD-V
+          ansible.builtin.fail:
+            msg: "CPU does not expose VT-x/AMD-V. Enable virtualization in BIOS/UEFI (or nested virt on the host)."
+          when: kvm_cpu_check.rc != 0
+
+    - name: Install KVM packages
+      ansible.builtin.apt:
+        name: "{{ kvm_packages + (kvm_gui_packages if kvm_with_gui | bool else []) }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+        install_recommends: false
+
+    - name: Verify KVM acceleration
+      ansible.builtin.command: kvm-ok
+      changed_when: false
+
+    - name: Enable and start libvirtd
+      ansible.builtin.systemd_service:
+        name: libvirtd
+        enabled: true
+        state: started
+
+    - name: Check for libvirt default network
+      ansible.builtin.command: virsh net-info default
+      register: kvm_default_net
+      changed_when: false
+      failed_when: false
+
+    - name: Configure libvirt default network
+      when: kvm_default_net.rc == 0
+      block:
+        - name: Autostart libvirt default network
+          ansible.builtin.command: virsh net-autostart default
+          when: kvm_default_net.stdout is not search('Autostart:\s+yes')
+          changed_when: true
+
+        - name: Start libvirt default network
+          ansible.builtin.command: virsh net-start default
+          when: kvm_default_net.stdout is not search('Active:\s+yes')
+          changed_when: true
+
+    - name: Add users to kvm and libvirt groups
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: [kvm, libvirt]
+        append: true
+      loop: "{{ kvm_users | reject('equalto', 'root') | list }}"
+
+    - name: Report libvirt version
+      ansible.builtin.command: virsh version
+      register: kvm_virsh_version
+      changed_when: false
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg:
+          - "{{ kvm_virsh_version.stdout_lines }}"
+          - "Users {{ kvm_users | join(', ') }} must log out and back in for group changes to take effect."
