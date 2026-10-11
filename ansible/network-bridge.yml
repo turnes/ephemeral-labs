@@ -198,10 +198,11 @@
             state: absent
 
     - name: Check the bridge has an address
-      ansible.builtin.command: ip -br addr show {{ elab_bridge_name }}
+      ansible.builtin.command: ip -4 -br addr show {{ elab_bridge_name }}
       register: elab_bridge_addr
       changed_when: false
-      failed_when: elab_bridge_addr.rc != 0 or elab_bridge_addr.stdout is not search('UP')
+      # Bridges often report operstate UNKNOWN while working, so check for an IPv4 address instead
+      failed_when: elab_bridge_addr.rc != 0 or elab_bridge_addr.stdout is not search('\d+\.\d+\.\d+\.\d+/\d+')
 
     - name: Check for libvirt bridge network
       ansible.builtin.command: virsh net-info {{ elab_bridge_network }}
