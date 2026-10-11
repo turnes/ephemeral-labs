@@ -1,0 +1,56 @@
+---
+# Install the image and lab tooling on the KVM hosts:
+#   terraform, packer (HashiCorp apt repo), cloud-image-utils (cloud-localds), virtinst (virt-install).
+# Run after install-kvm.yml.
+# Usage (from the project root; ansible.cfg points at inventory.yml):
+#   ansible-playbook ansible/install-tools.yml -K
+- name: Install lab tools
+  hosts: kvm_hosts
+  become: true
+
+  vars:
+    elab_hashicorp_packages:
+      - terraform
+      - packer
+    elab_ubuntu_packages:
+      - cloud-image-utils
+      - virtinst
+
+  tasks:
+    - name: Install deb822_repository dependency
+      ansible.builtin.apt:
+        name: python3-debian
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Add HashiCorp apt repository
+      ansible.builtin.deb822_repository:
+        name: hashicorp
+        types: deb
+        uris: https://apt.releases.hashicorp.com
+        suites: "{{ ansible_facts['distribution_release'] }}"
+        components: main
+        architectures: "{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}"
+        signed_by: https://apt.releases.hashicorp.com/gpg
+
+    - name: Install tools
+      ansible.builtin.apt:
+        name: "{{ elab_hashicorp_packages + elab_ubuntu_packages }}"
+        state: present
+        update_cache: true
+        install_recommends: false
+
+    - name: Report versions
+      ansible.builtin.command: "{{ item }}"
+      loop:
+        - terraform version
+        - packer version
+        - dpkg-query -W --showformat=${Package}\ ${Version} cloud-image-utils
+        - virt-install --version
+      register: elab_tool_versions
+      changed_when: false
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg: "{{ elab_tool_versions.results | map(attribute='stdout_lines') | map('first') | list }}"

@@ -76,7 +76,15 @@ ansible-playbook ansible/network-bridge.yml -K   # -e elab_bridge_interface=<nic
 
 Moves the host's wired NIC (default-route interface) into `br0`, keeping its IP, and defines the libvirt network `elab-bridge` so lab VMs get addresses on the LAN. If Ansible can't reconnect after the switch, the host restores its original netplan config within 3 minutes. Originals are kept in `/etc/netplan/elab-backup/`.
 
-### 8. Verify
+### 8. Lab tools
+
+```bash
+ansible-playbook ansible/install-tools.yml -K
+```
+
+Installs `terraform` and `packer` (HashiCorp apt repo), `cloud-image-utils` (`cloud-localds`) and `virtinst` (`virt-install`) on the KVM hosts.
+
+### 9. Verify
 
 ```bash
 ssh lab1 kvm-ok
@@ -95,6 +103,7 @@ elab check                  # hardware preflight
 elab install                # install KVM on lab hosts (Ansible)
 elab pool                   # create storage pools (Ansible)
 elab bridge                 # create LAN bridge br0 (Ansible)
+elab tools                  # install terraform, packer, cloud-image-utils (Ansible)
 elab hosts add|rm|ls        # manage lab hosts
 elab ssh setup | <name>     # set up keys / connect
 elab up|down|status <lab>   # terraform in modules/
