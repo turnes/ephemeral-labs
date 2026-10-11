@@ -68,12 +68,22 @@ ansible-playbook ansible/storage-pool.yml -K
 | `elab-images` | `/var/lib/libvirt/elab/images` | Packer uploads base/golden images; Terraform clones from them |
 | one per lab | `/var/lib/libvirt/elab/labs/<lab>` | Created and destroyed by Terraform with the lab |
 
-### 7. Verify
+### 7. Network bridge
+
+```bash
+ansible-playbook ansible/network-bridge.yml -K   # -e elab_bridge_interface=<nic> to pick a NIC
+```
+
+Moves the host's wired NIC (default-route interface) into `br0`, keeping its IP, and defines the libvirt network `elab-bridge` so lab VMs get addresses on the LAN. If Ansible can't reconnect after the switch, the host restores its original netplan config within 3 minutes. Originals are kept in `/etc/netplan/elab-backup/`.
+
+### 8. Verify
 
 ```bash
 ssh lab1 kvm-ok
 ssh lab1 virsh -c qemu:///system list --all
 ssh lab1 virsh -c qemu:///system pool-list --all
+ssh lab1 virsh -c qemu:///system net-list --all
+ssh lab1 ip -br addr show br0
 ```
 
 ## Roadmap: `elab` CLI
@@ -84,6 +94,7 @@ A single entry point (`bin/elab`, bash) that wraps the scripts above:
 elab check                  # hardware preflight
 elab install                # install KVM on lab hosts (Ansible)
 elab pool                   # create storage pools (Ansible)
+elab bridge                 # create LAN bridge br0 (Ansible)
 elab hosts add|rm|ls        # manage lab hosts
 elab ssh setup | <name>     # set up keys / connect
 elab up|down|status <lab>   # terraform in modules/

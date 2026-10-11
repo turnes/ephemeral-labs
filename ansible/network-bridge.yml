@@ -1,0 +1,243 @@
+---
+# Bridge the host's primary NIC into br0 so lab VMs get addresses on the physical LAN,
+# and define the libvirt network elab-bridge on it for Terraform.
+# Ubuntu Server (netplan + systemd-networkd). The NIC's current IP config (DHCP or static) moves to the bridge.
+# The switch rolls back automatically if Ansible can't reconnect within elab_bridge_rollback_seconds.
+# Run after install-kvm.yml.
+# Usage (from the project root; ansible.cfg points at inventory.yml):
+#   ansible-playbook ansible/network-bridge.yml -K
+#   ansible-playbook ansible/network-bridge.yml -K -e elab_bridge_interface=enp2s0
+- name: Create LAN bridge for lab VMs
+  hosts: kvm_hosts
+  become: true
+
+  vars:
+    elab_bridge_name: br0
+    # NIC to enslave; defaults to the interface of the default route
+    elab_bridge_interface: "{{ ansible_facts['default_ipv4']['interface'] | default('') }}"
+    elab_bridge_network: elab-bridge
+    elab_bridge_rollback_seconds: 180
+    elab_netplan_file: /etc/netplan/90-elab-bridge.yaml
+    elab_netplan_backup: /etc/netplan/elab-backup
+    # Addressing keys moved from the NIC to the bridge
+    elab_bridge_ip_keys: [dhcp4, dhcp6, addresses, routes, gateway4, gateway6, nameservers,
+                          accept-ra, dhcp4-overrides, dhcp6-overrides, link-local, ipv6-privacy]
+
+  tasks:
+    - name: Check libvirt is available
+      ansible.builtin.command: virsh -c qemu:///system version
+      changed_when: false
+      register: elab_virsh
+      failed_when: false
+
+    - name: Fail if libvirt is missing
+      ansible.builtin.fail:
+        msg: "libvirt is not available on {{ inventory_hostname }}; run ansible/install-kvm.yml first."
+      when: elab_virsh.rc != 0
+
+    - name: Configure bridge in netplan
+      # Already bridged when the default route goes through the bridge
+      when: elab_bridge_interface != elab_bridge_name
+      block:
+        - name: Check the NIC exists and is wired
+          ansible.builtin.stat:
+            path: "/sys/class/net/{{ elab_bridge_interface }}/wireless"
+          register: elab_wireless
+          failed_when: >-
+            elab_bridge_interface == '' or
+            elab_bridge_interface | replace('-', '_') not in ansible_facts or
+            elab_wireless.stat.exists
+
+        - name: Find netplan files
+          ansible.builtin.find:
+            paths: /etc/netplan
+            patterns: "*.yaml"
+          register: elab_netplan_files
+
+        - name: Read netplan files
+          ansible.builtin.slurp:
+            path: "{{ item }}"
+          loop: "{{ elab_netplan_files.files | map(attribute='path') | sort }}"
+          register: elab_netplan_raw
+
+        - name: Merge netplan files in netplan's order
+          ansible.builtin.set_fact:
+            elab_netplan: "{{ elab_netplan | default({}) | combine(item.content | b64decode | from_yaml | default({}, true), recursive=true) }}"
+          loop: "{{ elab_netplan_raw.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: Fail if the NIC has no netplan config to move
+          ansible.builtin.fail:
+            msg: >-
+              {{ elab_bridge_interface }} is not under network.ethernets in /etc/netplan/*.yaml.
+              Set elab_bridge_interface or configure the bridge by hand.
+          when: elab_bridge_interface not in (elab_netplan['network']['ethernets'] | default({}))
+
+        - name: Build bridged netplan config
+          vars:
+            nic: "{{ elab_netplan['network']['ethernets'][elab_bridge_interface] }}"
+            nic_ip: "{{ nic | dict2items | selectattr('key', 'in', elab_bridge_ip_keys) | items2dict }}"
+            nic_link: "{{ nic | dict2items | rejectattr('key', 'in', elab_bridge_ip_keys) | items2dict }}"
+          ansible.builtin.set_fact:
+            elab_netplan_new:
+              network: >-
+                {{ elab_netplan['network'] | combine({
+                     'renderer': 'networkd',
+                     'ethernets': elab_netplan['network']['ethernets'] | combine({
+                       elab_bridge_interface: nic_link | combine({'dhcp4': false, 'dhcp6': false})
+                     }),
+                     'bridges': elab_netplan['network']['bridges'] | default({}) | combine({
+                       elab_bridge_name: nic_ip | combine({
+                         'interfaces': [elab_bridge_interface],
+                         'macaddress': ansible_facts[elab_bridge_interface | replace('-', '_')]['macaddress'],
+                         'parameters': {'stp': false, 'forward-delay': 0}
+                       })
+                     })
+                   }) }}
+
+        - name: Create netplan backup directory
+          ansible.builtin.file:
+            path: "{{ elab_netplan_backup }}"
+            state: directory
+            mode: "0700"
+
+        - name: Back up original netplan files (first run only)
+          ansible.builtin.copy:
+            src: "{{ item }}"
+            dest: "{{ elab_netplan_backup }}/"
+            remote_src: true
+            force: false
+            mode: preserve
+          loop: "{{ elab_netplan_files.files | map(attribute='path') | list }}"
+
+        - name: Check for cloud-init
+          ansible.builtin.stat:
+            path: /etc/cloud/cloud.cfg.d
+          register: elab_cloud_init
+
+        - name: Stop cloud-init from rewriting netplan on boot
+          ansible.builtin.copy:
+            dest: /etc/cloud/cloud.cfg.d/99-elab-disable-network-config.cfg
+            content: "network: {config: disabled}\n"
+            mode: "0644"
+          when: elab_cloud_init.stat.isdir | default(false)
+
+        - name: Stage bridged netplan config
+          ansible.builtin.copy:
+            dest: "{{ elab_netplan_file }}.staged"
+            content: "{{ elab_netplan_new | to_nice_yaml(indent=2) }}"
+            mode: "0600"
+
+        - name: Install apply-with-rollback script
+          ansible.builtin.copy:
+            dest: /usr/local/sbin/elab-bridge-apply
+            mode: "0755"
+            content: |
+              #!/bin/sh
+              # Managed by ansible/network-bridge.yml. Switch netplan to the staged bridge config
+              # and roll back unless /run/elab-bridge-confirmed appears within the timeout.
+              set -u
+              NETPLAN=/etc/netplan
+              BACKUP={{ elab_netplan_backup }}
+              NEW={{ elab_netplan_file }}
+              CONFIRM=/run/elab-bridge-confirmed
+              rm -f "$CONFIRM"
+
+              rollback() {
+                  echo "elab-bridge: rolling back" >&2
+                  rm -f "$NEW"
+                  cp -p "$BACKUP"/*.yaml "$NETPLAN"/
+                  ip link del {{ elab_bridge_name }} 2>/dev/null || true
+                  netplan apply
+                  exit 1
+              }
+
+              for f in "$BACKUP"/*.yaml; do rm -f "$NETPLAN/$(basename "$f")"; done
+              cp "$NEW.staged" "$NEW" && chmod 600 "$NEW"
+              netplan generate || rollback
+              netplan apply || rollback
+
+              i=0
+              while [ "$i" -lt {{ elab_bridge_rollback_seconds }} ]; do
+                  [ -f "$CONFIRM" ] && exit 0
+                  sleep 1
+                  i=$((i + 1))
+              done
+              rollback
+
+        - name: Apply bridge (survives the SSH drop)
+          ansible.builtin.command: /usr/local/sbin/elab-bridge-apply
+          async: "{{ elab_bridge_rollback_seconds + 60 }}"
+          poll: 0
+          register: elab_bridge_job
+          changed_when: true
+
+        - name: Wait for the host to come back on the bridge
+          ansible.builtin.wait_for_connection:
+            delay: 10
+            timeout: "{{ elab_bridge_rollback_seconds - 30 }}"
+
+        - name: Confirm the change (cancels rollback)
+          ansible.builtin.file:
+            path: /run/elab-bridge-confirmed
+            state: touch
+            mode: "0600"
+
+        - name: Wait for apply script to finish
+          ansible.builtin.async_status:
+            jid: "{{ elab_bridge_job.ansible_job_id }}"
+          register: elab_bridge_result
+          until: elab_bridge_result.finished
+          retries: 10
+          delay: 2
+
+        - name: Remove staged config
+          ansible.builtin.file:
+            path: "{{ elab_netplan_file }}.staged"
+            state: absent
+
+    - name: Check the bridge has an address
+      ansible.builtin.command: ip -br addr show {{ elab_bridge_name }}
+      register: elab_bridge_addr
+      changed_when: false
+      failed_when: elab_bridge_addr.rc != 0 or elab_bridge_addr.stdout is not search('UP')
+
+    - name: Check for libvirt bridge network
+      ansible.builtin.command: virsh net-info {{ elab_bridge_network }}
+      register: elab_net_info
+      changed_when: false
+      failed_when: false
+
+    - name: Define libvirt bridge network
+      ansible.builtin.command: virsh net-define /dev/stdin
+      args:
+        stdin: |
+          <network>
+            <name>{{ elab_bridge_network }}</name>
+            <forward mode="bridge"/>
+            <bridge name="{{ elab_bridge_name }}"/>
+          </network>
+      when: elab_net_info.rc != 0
+      changed_when: true
+
+    - name: Read libvirt bridge network state
+      ansible.builtin.command: virsh net-info {{ elab_bridge_network }}
+      register: elab_net_info
+      changed_when: false
+
+    - name: Start libvirt bridge network
+      ansible.builtin.command: virsh net-start {{ elab_bridge_network }}
+      when: elab_net_info.stdout is not search('Active:\s+yes')
+      changed_when: true
+
+    - name: Autostart libvirt bridge network
+      ansible.builtin.command: virsh net-autostart {{ elab_bridge_network }}
+      when: elab_net_info.stdout is not search('Autostart:\s+yes')
+      changed_when: true
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg:
+          - "{{ elab_bridge_addr.stdout }}"
+          - "libvirt network {{ elab_bridge_network }} -> {{ elab_bridge_name }} (use this name in Terraform)"
