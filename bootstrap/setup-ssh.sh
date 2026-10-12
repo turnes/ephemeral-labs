@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Create the ephemeral-labs SSH key, write a ~/.ssh config entry per host and copy the key to each host.
-# Usage: ./setup-ssh.sh [inventory]   (default: inventory.yml in the project root)
-# Inventory format: see inventory.example.yml
+# Usage: ./setup-ssh.sh [inventory]   (default: ansible/inventory/hosts.yml)
+# Inventory format: see ansible/inventory/hosts.example.yml
 # Run as your normal user, not root. Targets need openssh-server and password login for the first copy.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-HOSTS_FILE="${1:-$(dirname "$SCRIPT_DIR")/inventory.yml}"
+HOSTS_FILE="${1:-$(dirname "$SCRIPT_DIR")/ansible/inventory/hosts.yml}"
 KEY_DIR="$HOME/.ssh/ephemeral-labs"
 KEY="$KEY_DIR/id_ed25519"
 INCLUDE_LINE="Include ~/.ssh/ephemeral-labs/*.conf"
@@ -16,7 +16,7 @@ warn() { echo -e "\e[1;33m!!\e[0m $*" >&2; }
 die()  { echo -e "\e[1;31mxx\e[0m $*" >&2; exit 1; }
 
 [[ $EUID -ne 0 ]] || die "Run as your normal user, not root."
-[[ -f "$HOSTS_FILE" ]] || die "Hosts file not found: $HOSTS_FILE (copy inventory.example.yml to inventory.yml)."
+[[ -f "$HOSTS_FILE" ]] || die "Hosts file not found: $HOSTS_FILE (copy ansible/inventory/hosts.example.yml to ansible/inventory/hosts.yml)."
 source "$SCRIPT_DIR/hosts.sh"
 HOSTS=$(read_hosts "$HOSTS_FILE") || exit 1
 

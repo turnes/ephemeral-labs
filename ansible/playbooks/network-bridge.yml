@@ -4,9 +4,9 @@
 # Ubuntu Server (netplan + systemd-networkd). The NIC's current IP config (DHCP or static) moves to the bridge.
 # The switch rolls back automatically if Ansible can't reconnect within elab_bridge_rollback_seconds.
 # Run after install-kvm.yml.
-# Usage (from the project root; ansible.cfg points at inventory.yml):
-#   ansible-playbook ansible/network-bridge.yml -K
-#   ansible-playbook ansible/network-bridge.yml -K -e elab_bridge_interface=enp2s0
+# Usage (from the ansible/ directory; ansible.cfg points at inventory/hosts.yml):
+#   ansible-playbook playbooks/network-bridge.yml -K
+#   ansible-playbook playbooks/network-bridge.yml -K -e elab_bridge_interface=enp2s0
 - name: Create LAN bridge for lab VMs
   hosts: kvm_hosts
   become: true
@@ -32,7 +32,7 @@
 
     - name: Fail if libvirt is missing
       ansible.builtin.fail:
-        msg: "libvirt is not available on {{ inventory_hostname }}; run ansible/install-kvm.yml first."
+        msg: "libvirt is not available on {{ inventory_hostname }}; run playbooks/install-kvm.yml first."
       when: elab_virsh.rc != 0
 
     - name: Configure bridge in netplan
@@ -135,7 +135,7 @@
             mode: "0755"
             content: |
               #!/bin/sh
-              # Managed by ansible/network-bridge.yml. Switch netplan to the staged bridge config
+              # Managed by ansible/playbooks/network-bridge.yml. Switch netplan to the staged bridge config
               # and roll back unless /run/elab-bridge-confirmed appears within the timeout.
               set -u
               NETPLAN=/etc/netplan

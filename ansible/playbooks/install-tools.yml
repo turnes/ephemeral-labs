@@ -3,9 +3,9 @@
 #   terraform, packer (HashiCorp apt repo), cloud-image-utils (cloud-localds), virtinst (virt-install),
 #   docker (Docker apt repo), kind (GitHub release), kubeadm + kubectl (pkgs.k8s.io).
 # Run after install-kvm.yml.
-# Usage (from the project root; ansible.cfg points at inventory.yml):
-#   ansible-playbook ansible/install-tools.yml -K
-#   ansible-playbook ansible/install-tools.yml -K -e elab_k8s_minor=v1.36 -e elab_kind_version=v0.32.0
+# Usage (from the ansible/ directory; ansible.cfg points at inventory/hosts.yml):
+#   ansible-playbook playbooks/install-tools.yml -K
+#   ansible-playbook playbooks/install-tools.yml -K -e elab_k8s_minor=v1.36 -e elab_kind_version=v0.32.0
 - name: Install lab tools
   hosts: kvm_hosts
   become: true

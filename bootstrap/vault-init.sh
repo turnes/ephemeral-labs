@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Create the ansible-vault password file and the encrypted secrets file with generated values.
+# Create the platform vault (hypervisor secrets for Ansible) with generated values.
+# Lab secrets are separate: helpers/lab-secrets.sh <lab>.
 # Usage: ./bootstrap/vault-init.sh
-#   Password file: .vault-pass in the project root (gitignored; ansible.cfg points at it; back it up)
-#   Secrets:       group_vars/all/vault.yml (loaded by every playbook; gitignored)
-# Edit secrets later with: ansible-vault edit group_vars/all/vault.yml
+#   Password file: ansible/.vault-pass (gitignored; ansible.cfg points at it; back it up)
+#   Secrets:       ansible/inventory/group_vars/all/vault.yml (loaded by every playbook; gitignored)
+# Edit secrets later (from ansible/): ansible-vault edit inventory/group_vars/all/vault.yml
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PASS_FILE="$ROOT/.vault-pass"
-VAULT="$ROOT/group_vars/all/vault.yml"
+ANSIBLE_DIR="$ROOT/ansible"
+PASS_FILE="$ANSIBLE_DIR/.vault-pass"
+VAULT="$ANSIBLE_DIR/inventory/group_vars/all/vault.yml"
 
 log()  { echo -e "\e[1;32m==>\e[0m $*"; }
 die()  { echo -e "\e[1;31mxx\e[0m $*" >&2; exit 1; }
@@ -23,21 +25,18 @@ else
     head -c 32 /dev/urandom | base64 > "$PASS_FILE"
 fi
 
-[[ ! -f "$VAULT" ]] || die "$VAULT already exists. Edit it with: ansible-vault edit group_vars/all/vault.yml"
+[[ ! -f "$VAULT" ]] || die "$VAULT already exists. Edit it from ansible/ with: ansible-vault edit inventory/group_vars/all/vault.yml"
 
 log "Creating encrypted $VAULT"
 mkdir -p "$(dirname "$VAULT")"
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 cat > "$tmp" <<EOF
-# Encrypted with ansible-vault. Edit: ansible-vault edit group_vars/all/vault.yml
+# Encrypted with ansible-vault. Edit (from ansible/): ansible-vault edit inventory/group_vars/all/vault.yml
 
 # rsync repository (repo.yml, repo-mirror.yml)
 vault_rsync_password: $(head -c 24 /dev/urandom | base64 | tr -d '/+=')
-
-# Exported as TF_VAR_<key> by: eval "\$(./bootstrap/vault-env.sh)"
-vault_terraform: {}
 EOF
-# ansible.cfg in the project root supplies the password file
-(cd "$ROOT" && ansible-vault encrypt --output "$VAULT" "$tmp" >/dev/null)
+# ansible/ansible.cfg supplies the password file
+(cd "$ANSIBLE_DIR" && ansible-vault encrypt --output "$VAULT" "$tmp" >/dev/null)
 log "Done. Back up $PASS_FILE: without it the vault cannot be decrypted."

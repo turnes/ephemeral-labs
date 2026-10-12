@@ -1,0 +1,181 @@
+---
+# Download Ubuntu cloud images into the elab-images storage pool as versioned base volumes:
+#   <name>-<serial>.qcow2, e.g. ubuntu-26.04-20260927.qcow2
+# serial "current" resolves to the build behind <base_url>/current/ (once per run, same for every host);
+# the image comes from the immutable <base_url>/<serial>/ directory.
+#
+# The repository host (elab_repo group, see repo.yml) downloads each image once into
+# /opt/elab/cloud-images/; the other hosts sync their /opt/elab mirror (repo-mirror.yml) and every
+# host copies the image from its local /opt/elab into the pool. Copies are verified against Ubuntu's SHA256SUMS.
+#
+# Terraform pins a specific volume name, so new builds never change existing labs.
+# Existing volumes are never replaced (lab disks use them as backing files). Delete old ones
+# once no lab uses them:  virsh vol-delete --pool elab-images ubuntu-26.04-<serial>.qcow2
+# Run after storage-pool.yml, repo.yml and repo-mirror.yml.
+# Usage (from the ansible/ directory; ansible.cfg points at inventory/hosts.yml):
+#   ansible-playbook playbooks/cloud-images.yml -K
+- name: Download cloud images
+  hosts: kvm_hosts
+  become: true
+
+  vars:
+    elab_image_pool_name: elab-images
+    elab_image_pool_path: /var/lib/libvirt/elab/images
+    elab_arch: "{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}"
+    elab_cloud_images:
+      - name: ubuntu-26.04
+        base_url: https://cloud-images.ubuntu.com/resolute
+        file: resolute-server-cloudimg-{{ elab_arch }}.img
+        serial: current  # or pin a build, e.g. 20260927
+    # Local file repository (repo.yml)
+    elab_repo_host: "{{ groups['elab_repo'] | default([]) | first | default('') }}"
+    elab_repo_dir: /opt/elab/cloud-images
+
+  tasks:
+    - name: Check the image pool exists
+      ansible.builtin.command: virsh pool-info {{ elab_image_pool_name }}
+      register: elab_pool_info
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if the image pool is missing
+      ansible.builtin.fail:
+        msg: "Pool {{ elab_image_pool_name }} not found on {{ inventory_hostname }}; run playbooks/storage-pool.yml first."
+      when: elab_pool_info.rc != 0
+
+    - name: Fail if no repository host is defined
+      ansible.builtin.fail:
+        msg: "Add the repository host to the elab_repo group in inventory/hosts.yml and run playbooks/repo.yml."
+      when: elab_repo_host == ''
+      run_once: true
+
+    - name: Check every host has the same architecture
+      ansible.builtin.assert:
+        that: ansible_facts['architecture'] == hostvars[ansible_play_hosts | first]['ansible_facts']['architecture']
+        fail_msg: "Mixed architectures; run per architecture with --limit."
+        quiet: true
+
+    - name: Resolve current build serials
+      ansible.builtin.uri:
+        url: "{{ item.base_url }}/current/unpacked/build-info.txt"
+        return_content: true
+      loop: "{{ elab_cloud_images }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: item.serial | default('current') == 'current'
+      run_once: true
+      register: elab_build_info
+
+    - name: Pin each image to a serial
+      ansible.builtin.set_fact:
+        elab_pinned: >-
+          {{ elab_pinned | default([]) + [item.item | combine({
+               'serial': (item.content | regex_search('serial=(\S+)', '\1') | first)
+                         if item.content is defined else item.item.serial | string
+             })] }}
+      loop: "{{ elab_build_info.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Fetch checksums for the pinned builds
+      ansible.builtin.uri:
+        url: "{{ item.base_url }}/{{ item.serial }}/SHA256SUMS"
+        return_content: true
+      loop: "{{ elab_pinned }}"
+      loop_control:
+        label: "{{ item.name }}-{{ item.serial }}"
+      run_once: true
+      register: elab_sums
+
+    - name: Record volume name and checksum per image
+      ansible.builtin.set_fact:
+        elab_images: >-
+          {{ elab_images | default([]) + [item.item | combine({
+               'volume': item.item.name ~ '-' ~ item.item.serial ~ '.qcow2',
+               'sha256': item.content | regex_search('(?m)^([0-9a-f]{64}) \*?' ~ (item.item.file | regex_escape) ~ '$', '\1') | default([''], true) | first
+             })] }}
+      loop: "{{ elab_sums.results }}"
+      loop_control:
+        label: "{{ item.item.name }}-{{ item.item.serial }}"
+
+    - name: Check serials and checksums
+      ansible.builtin.assert:
+        that:
+          - item.serial is match('^[0-9]{8}(\.[0-9]+)?$')
+          - item.sha256 | length == 64
+        fail_msg: "{{ item.name }}: bad serial '{{ item.serial }}' or no checksum for {{ item.file }} in SHA256SUMS"
+        quiet: true
+      loop: "{{ elab_images }}"
+      loop_control:
+        label: "{{ item.volume }}"
+
+    - name: Download images into the repository
+      ansible.builtin.get_url:
+        url: "{{ item.base_url }}/{{ item.serial }}/{{ item.file }}"
+        dest: "{{ elab_repo_dir }}/{{ item.volume }}"
+        checksum: "sha256:{{ item.sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+        timeout: 600
+      loop: "{{ elab_images }}"
+      loop_control:
+        label: "{{ item.volume }}"
+      delegate_to: "{{ elab_repo_host }}"
+      run_once: true
+
+    - name: Sync the mirror from the repository
+      ansible.builtin.systemd_service:
+        name: elab-mirror.service
+        state: started
+      when: inventory_hostname != elab_repo_host
+      changed_when: false
+
+    - name: Check for existing volumes
+      ansible.builtin.stat:
+        path: "{{ elab_image_pool_path }}/{{ item.volume }}"
+        get_checksum: false
+      loop: "{{ elab_images }}"
+      loop_control:
+        label: "{{ item.volume }}"
+      register: elab_image_stat
+
+    - name: Verify the local repository copy
+      ansible.builtin.stat:
+        path: "{{ elab_repo_dir }}/{{ item.item.volume }}"
+        checksum_algorithm: sha256
+      loop: "{{ elab_image_stat.results }}"
+      loop_control:
+        label: "{{ item.item.volume }}"
+      when: not item.stat.exists
+      register: elab_repo_stat
+      failed_when: >-
+        not elab_repo_stat.stat.exists or elab_repo_stat.stat.checksum != item.item.sha256
+
+    - name: Copy images from the local repository into the pool
+      ansible.builtin.copy:
+        src: "{{ elab_repo_dir }}/{{ item.item.volume }}"
+        dest: "{{ elab_image_pool_path }}/{{ item.item.volume }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ elab_image_stat.results }}"
+      loop_control:
+        label: "{{ item.item.volume }}"
+      when: not item.stat.exists
+      register: elab_image_download
+
+    - name: Refresh the pool so libvirt sees new volumes
+      ansible.builtin.command: virsh pool-refresh {{ elab_image_pool_name }}
+      when: elab_image_download is changed
+      changed_when: true
+
+    - name: List volumes
+      ansible.builtin.command: virsh vol-list --pool {{ elab_image_pool_name }} --details
+      register: elab_vol_list
+      changed_when: false
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg: "{{ ['Pinned: ' ~ (elab_images | map(attribute='volume') | join(', '))] + elab_vol_list.stdout_lines }}"

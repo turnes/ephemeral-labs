@@ -2,8 +2,8 @@
 # Create the shared libvirt storage pool for base and golden images (Packer uploads, Terraform consumes)
 # and the parent directory for per-lab pools (each lab's pool is created and destroyed by Terraform).
 # Run after install-kvm.yml.
-# Usage (from the project root; ansible.cfg points at inventory.yml):
-#   ansible-playbook ansible/storage-pool.yml -K
+# Usage (from the ansible/ directory; ansible.cfg points at inventory/hosts.yml):
+#   ansible-playbook playbooks/storage-pool.yml -K
 - name: Create ephemeral-labs storage pools
   hosts: kvm_hosts
   become: true
@@ -24,7 +24,7 @@
 
     - name: Fail if libvirt is missing
       ansible.builtin.fail:
-        msg: "libvirt is not available on {{ inventory_hostname }}; run ansible/install-kvm.yml first."
+        msg: "libvirt is not available on {{ inventory_hostname }}; run playbooks/install-kvm.yml first."
       when: elab_virsh.rc != 0
 
     - name: Create pool directories

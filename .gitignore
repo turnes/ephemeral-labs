@@ -1,4 +1,12 @@
-inventory.yml
-.vault-pass
-group_vars/all/vault.yml
+# Platform (hypervisors)
+ansible/inventory/hosts.yml
+ansible/.vault-pass
+ansible/inventory/group_vars/all/vault.yml
 .ansible/
+
+# Labs: per-lab secrets and Terraform state
+labs/*/secrets.yml
+labs/*/.vault-pass
+.terraform/
+*.tfstate
+*.tfstate.*

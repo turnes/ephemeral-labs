@@ -1,7 +1,7 @@
 # Sourced by the bootstrap scripts.
 # read_hosts FILE: read an Ansible YAML inventory and print one "name<TAB>address<TAB>user<TAB>port" line per host.
 # Looks at every "hosts:" block and reads ansible_host, ansible_user and ansible_port; other keys are ignored.
-# Plain awk, no YAML library needed, so keep the block style shown in inventory.example.yml.
+# Plain awk, no YAML library needed, so keep the block style shown in ansible/inventory/hosts.example.yml.
 read_hosts() {
     awk '
         function fail(msg, line) { print FILENAME ":" (line ? line : NR) ": " msg > "/dev/stderr"; err = 1 }
