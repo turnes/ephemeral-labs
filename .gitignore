@@ -1,2 +1,4 @@
 inventory.yml
+.vault-pass
+group_vars/all/vault.yml
 .ansible/

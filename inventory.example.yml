@@ -12,3 +12,8 @@ kvm_hosts:
     # Ubuntu 26.04 defaults to sudo-rs, whose password prompt Ansible doesn't detect; use classic sudo
     ansible_become_exe: sudo.ws
     ansible_python_interpreter: /usr/bin/python3
+
+# Host that runs the local file repository (repo.yml); must also be listed under kvm_hosts above
+elab_repo:
+  hosts:
+    lab1:

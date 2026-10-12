@@ -1,0 +1,89 @@
+---
+# Mirror the repository (repo.yml) to /opt/elab on every other KVM host.
+# A systemd timer pulls rsync://<repo>/elab/ every 5 minutes. One-way and without --delete:
+# files removed from the repository stay on the mirrors until removed there.
+# Sync now on a host:  sudo systemctl start elab-mirror.service
+# Run after repo.yml.
+# Usage (from the project root; ansible.cfg points at inventory.yml):
+#   ansible-playbook ansible/repo-mirror.yml -K
+- name: Mirror the file repository
+  hosts: kvm_hosts:!elab_repo
+  become: true
+
+  vars:
+    elab_repo_host: "{{ groups['elab_repo'] | default([]) | first | default('') }}"
+    elab_repo_address: "{{ hostvars[elab_repo_host]['ansible_host'] | default(elab_repo_host) }}"
+    elab_repo_module: elab
+    elab_repo_root: /opt/elab
+    elab_mirror_interval: 5min
+
+  tasks:
+    - name: Fail if no repository host is defined
+      ansible.builtin.fail:
+        msg: "Add the repository host to the elab_repo group in inventory.yml and run ansible/repo.yml."
+      when: elab_repo_host == ''
+
+    - name: Install rsync
+      ansible.builtin.apt:
+        name: rsync
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create mirror directory
+      ansible.builtin.file:
+        path: "{{ elab_repo_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install mirror service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/elab-mirror.service
+        mode: "0644"
+        content: |
+          # Managed by ansible/repo-mirror.yml
+          [Unit]
+          Description=Mirror ephemeral-labs repository from {{ elab_repo_host }}
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=oneshot
+          # --delay-updates: new files appear only once complete
+          ExecStart=/usr/bin/rsync -a --partial --delay-updates rsync://{{ elab_repo_address }}/{{ elab_repo_module }}/ {{ elab_repo_root }}/
+
+    - name: Install mirror timer
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/elab-mirror.timer
+        mode: "0644"
+        content: |
+          # Managed by ansible/repo-mirror.yml
+          [Unit]
+          Description=Mirror ephemeral-labs repository every {{ elab_mirror_interval }}
+
+          [Timer]
+          OnBootSec=2min
+          OnUnitActiveSec={{ elab_mirror_interval }}
+          RandomizedDelaySec=30
+
+          [Install]
+          WantedBy=timers.target
+
+    - name: Enable mirror timer
+      ansible.builtin.systemd_service:
+        name: elab-mirror.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Sync now
+      ansible.builtin.systemd_service:
+        name: elab-mirror.service
+        state: started
+      changed_when: false
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg: "{{ elab_repo_root }} mirrors rsync://{{ elab_repo_address }}/{{ elab_repo_module }}/ every {{ elab_mirror_interval }}"

@@ -1,0 +1,74 @@
+---
+# Set up the local file repository on the elab_repo host: /opt/elab exported read-only by the
+# rsync daemon (rsync://<repo>/elab/, port 873). The other KVM hosts mirror it (repo-mirror.yml).
+#   /opt/elab/cloud-images   base images (cloud-images.yml)
+#   /opt/elab/golden-images  Packer builds
+# Only the KVM hosts in the inventory may connect.
+# Usage (from the project root; ansible.cfg points at inventory.yml):
+#   ansible-playbook ansible/repo.yml -K
+- name: Set up local file repository
+  hosts: elab_repo
+  become: true
+
+  vars:
+    elab_repo_root: /opt/elab
+    elab_repo_dirs:
+      - cloud-images
+      - golden-images
+    elab_repo_module: elab
+
+  tasks:
+    - name: Install rsync
+      ansible.builtin.apt:
+        name: rsync
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create repository directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: "{{ [elab_repo_root] + elab_repo_dirs | map('regex_replace', '^', elab_repo_root ~ '/') | list }}"
+
+    - name: Configure the rsync daemon
+      ansible.builtin.copy:
+        dest: /etc/rsyncd.conf
+        mode: "0644"
+        content: |
+          # Managed by ansible/repo.yml
+          uid = nobody
+          gid = nogroup
+          use chroot = yes
+          read only = yes
+          max connections = 10
+
+          [{{ elab_repo_module }}]
+              path = {{ elab_repo_root }}
+              comment = ephemeral-labs file repository
+              hosts allow = 127.0.0.1 {% for h in groups['kvm_hosts'] %}{{ hostvars[h]['ansible_host'] | default(h) }} {% endfor %}
+
+              hosts deny = *
+      register: elab_rsyncd_config
+
+    - name: Enable and start the rsync daemon
+      ansible.builtin.systemd_service:
+        name: rsync
+        enabled: true
+        state: "{{ 'restarted' if elab_rsyncd_config is changed else 'started' }}"
+
+    - name: Wait for the rsync daemon
+      ansible.builtin.wait_for:
+        port: 873
+        timeout: 30
+
+    - name: Check the module is exported
+      ansible.builtin.command: rsync rsync://127.0.0.1/{{ elab_repo_module }}/
+      changed_when: false
+
+    - name: Show summary
+      ansible.builtin.debug:
+        msg: "Repository: rsync://{{ ansible_host | default(inventory_hostname) }}/{{ elab_repo_module }}/ -> {{ elab_repo_root }}"
