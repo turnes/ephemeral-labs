@@ -48,7 +48,7 @@ sudo apt update && sudo apt install -y ansible-core   # macOS: brew install ansi
 ./bootstrap/vault-init.sh
 ```
 
-Creates `ansible/.vault-pass` and the encrypted `ansible/inventory/group_vars/all/vault.yml` (both gitignored; back up `.vault-pass`). This is the platform vault: hypervisor secrets for Ansible only. Every playbook loads it automatically; edit it from `ansible/` with `ansible-vault edit inventory/group_vars/all/vault.yml`. Labs have their own vaults (see [Labs](#labs)).
+Creates `ansible/.vault-pass` and the encrypted `ansible/inventory/group_vars/all/vault.yml` (both gitignored; back up `.vault-pass`). This is the platform vault: hypervisor secrets for Ansible only. Every playbook loads it automatically; edit it from `ansible/` with `ansible-vault edit inventory/group_vars/all/vault.yml`.
 
 ### 5. SSH access
 
@@ -76,8 +76,8 @@ ansible-playbook playbooks/storage-pool.yml -K
 
 | Pool | Path | Used by |
 |------|------|---------|
-| `elab-images` | `/var/lib/libvirt/elab/images` | Packer uploads base/golden images; Terraform clones from them |
-| one per lab | `/var/lib/libvirt/elab/labs/<lab>` | Created and destroyed by Terraform with the lab |
+| `elab-images` | `/var/lib/libvirt/elab/images` | Base and golden images; KVM labs clone their disks from them |
+| one per lab | `/var/lib/libvirt/elab/labs/<lab>` | Created and destroyed with each KVM lab |
 
 ### 8. Network bridge
 
@@ -102,7 +102,13 @@ ansible-playbook playbooks/repo.yml -K          # rsync daemon on the elab_repo 
 ansible-playbook playbooks/repo-mirror.yml -K   # mirror timer on the other hosts
 ```
 
-`/opt/elab` (`cloud-images/`, `golden-images/`) is exported read-only by the rsync daemon on the `elab_repo` host (`rsync://elab@<repo>/elab/`, KVM hosts only, password from the vault). Every other host mirrors it to its own `/opt/elab` every 5 minutes (`elab-mirror.timer`), one-way and without deletes.
+`/opt/elab` (`cloud-images/`, `golden-images/`) is exported read-only by the rsync daemon on the `elab_repo` host (`rsync://elab@<repo>/elab/`, KVM hosts only, password from the vault). Every other host mirrors it to its own `/opt/elab` every 5 minutes (`elab-mirror.timer`), one-way and without deletes. A new file reaches the mirrors within about 5.5 minutes plus transfer time; it appears only once fully copied.
+
+To replicate immediately (e.g. after publishing a golden image), sync all mirrors now; this returns when every mirror is done:
+
+```bash
+ansible 'kvm_hosts:!elab_repo' -b -K -m systemd_service -a 'name=elab-mirror.service state=started'
+```
 
 ### 11. Cloud images
 
@@ -119,23 +125,11 @@ ssh lab1 kvm-ok
 ssh lab1 virsh -c qemu:///system list --all
 ssh lab1 virsh -c qemu:///system pool-list --all
 ssh lab1 virsh -c qemu:///system vol-list --pool elab-images
-ssh lab2 sudo systemctl start elab-mirror.service   # authenticated sync
+ssh -t lab2 sudo systemctl start elab-mirror.service   # authenticated sync
 ssh lab2 systemctl list-timers elab-mirror.timer
 ssh lab1 virsh -c qemu:///system net-list --all
 ssh lab1 ip -br addr show br0
 ```
-
-## Labs
-
-Each lab lives in `labs/<lab>/` (start from `labs/_template/`) with its own vault, created with the lab and removed with it:
-
-```bash
-./helpers/lab-secrets.sh <lab>             # secrets.yml + .vault-pass from secrets.example.yml
-cd labs/<lab> && terraform init && terraform apply
-terraform destroy && cd ../.. && ./helpers/lab-secrets.sh <lab> --destroy
-```
-
-In `secrets.example.yml`, a value of `generate` becomes a random password, `prompt` is asked for, anything else is copied. Terraform reads the vault with the `ansible/ansible` provider's ephemeral `ansible_vault` resource, so decrypted values never reach state or plan output.
 
 ## Roadmap: `elab` CLI
 
@@ -148,10 +142,11 @@ elab pool                   # create storage pools (Ansible)
 elab bridge                 # create LAN bridge br0 (Ansible)
 elab tools                  # install terraform, packer, docker, kind, kubeadm, ... (Ansible)
 elab repo                   # rsync repository + mirrors of /opt/elab (Ansible)
+elab repo sync              # replicate /opt/elab to all mirrors now
 elab images                 # download cloud images into elab-images (Ansible)
 elab hosts add|rm|ls        # manage lab hosts
 elab ssh setup | <name>     # set up keys / connect
-elab up|down|status <lab>   # lab secrets + terraform apply/destroy
+elab up|down|status <lab>   # create / destroy a lab
 ```
 
 `elab hosts` edits `ansible/inventory/hosts.yml`, the single source for SSH and Ansible.

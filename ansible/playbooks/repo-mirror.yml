@@ -4,6 +4,8 @@
 # files removed from the repository stay on the mirrors until removed there.
 # Authenticates as "elab" with vault_rsync_password (inventory/group_vars/all/vault.yml).
 # Sync now on a host:  sudo systemctl start elab-mirror.service
+# Sync now on all mirrors (from ansible/; returns when every mirror is done):
+#   ansible 'kvm_hosts:!elab_repo' -b -K -m systemd_service -a 'name=elab-mirror.service state=started'
 # Run after repo.yml.
 # Usage (from the ansible/ directory; ansible.cfg points at inventory/hosts.yml):
 #   ansible-playbook playbooks/repo-mirror.yml -K

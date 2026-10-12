@@ -79,4 +79,4 @@
       ansible.builtin.debug:
         msg:
           - "Image pool: {{ elab_image_pool_name }} -> {{ elab_image_pool_path }}"
-          - "Lab pools:  {{ elab_labs_path }}/<lab> (created by Terraform)"
+          - "Lab pools:  {{ elab_labs_path }}/<lab>"
